@@ -1,0 +1,48 @@
+File 1: gui.py
+Change 1 — Find this line (around line 3):
+pythonimport numpy as np
+It's not there, so add it at the top with the other imports:
+pythonimport numpy as np
+
+Change 2 — Find this exact block:
+python        ttk.Button(control_frame, text="Run Simulation", command=self.run_simulation).pack(side=tk.LEFT, padx=20)
+Replace it with:
+python        ttk.Label(control_frame, text="Annual Return (%):").pack(side=tk.LEFT, padx=5)
+        self.annual_return_var = tk.StringVar(value="")
+        ttk.Entry(control_frame, textvariable=self.annual_return_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(control_frame, text="Annual Vol (%):").pack(side=tk.LEFT, padx=5)
+        self.annual_vol_var = tk.StringVar(value="")
+        ttk.Entry(control_frame, textvariable=self.annual_vol_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(control_frame, text="Run Simulation", command=self.run_simulation).pack(side=tk.LEFT, padx=20)
+
+Change 3 — Find this exact block:
+python            simulator = MonteCarloSimulator(
+                current_price=stats['current_price'],
+                mean_return=stats['mean_return'],
+                std_return=stats['std_return']
+            )
+Replace it with:
+python            if self.annual_return_var.get().strip():
+                mean_return = float(self.annual_return_var.get()) / 100 / 252
+            else:
+                mean_return = stats['mean_return']
+
+            if self.annual_vol_var.get().strip():
+                std_return = float(self.annual_vol_var.get()) / 100 / np.sqrt(252)
+            else:
+                std_return = stats['std_return']
+
+            simulator = MonteCarloSimulator(
+                current_price=stats['current_price'],
+                mean_return=mean_return,
+                std_return=std_return
+            )
+
+File 2: nothing. Done.
+
+How to use it after:
+
+Leave the boxes blank → uses real historical data
+Type 12 in Annual Return and 20 in Annual Vol → runs simulation with those numbers instead
