@@ -1,0 +1,791 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+import numpy as np
+import pandas as pd
+from data_fetcher import DataFetcher
+from simulator import MonteCarloSimulator
+
+
+class MonteCarloGUI:
+    """GUI for Monte Carlo Stock Simulator"""
+
+    STOCKS = [
+        'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
+        'HINDUNILVR.NS', 'ITC.NS', 'SBIN.NS', 'BHARTIARTL.NS', 'KOTAKBANK.NS',
+        'LT.NS', 'AXISBANK.NS', 'BAJFINANCE.NS', 'MARUTI.NS', 'TITAN.NS',
+        'ASIANPAINT.NS', 'SUNPHARMA.NS', 'ULTRACEMCO.NS', 'WIPRO.NS', 'NTPC.NS',
+        'POWERGRID.NS', 'HCLTECH.NS', 'BAJAJFINSV.NS', 'TECHM.NS', 'NESTLEIND.NS',
+        'TATAMOTORS.NS', 'TATASTEEL.NS', 'ADANIENT.NS', 'ADANIPORTS.NS', 'JSWSTEEL.NS',
+        'HINDALCO.NS', 'COALINDIA.NS', 'ONGC.NS', 'BPCL.NS', 'GRASIM.NS',
+        'DRREDDY.NS', 'DIVISLAB.NS', 'CIPLA.NS', 'EICHERMOT.NS', 'HEROMOTOCO.NS',
+        'APOLLOHOSP.NS', 'TATACONSUM.NS', 'BRITANNIA.NS', 'UPL.NS', 'INDUSINDBK.NS',
+        'SBILIFE.NS', 'HDFCLIFE.NS', 'BAJAJ-AUTO.NS', 'M&M.NS', 'VEDL.NS',
+        '^NSEI'
+    ]
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Monte Carlo Simulator — Nifty 50")
+        self.root.geometry("1400x900")
+        self.root.resizable(True, True)
+
+        self.data_fetcher = DataFetcher(period="2y")
+        self.current_simulation = None
+        self.current_stock = None
+        self.stock_stats = {}
+
+        # ── Dark theme ───────────────────────────────────────────────────────
+        self.root.configure(bg='#1e1e1e')
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        BG     = '#1e1e1e'
+        PANEL  = '#2b2b2b'
+        ACCENT = '#3c3f41'
+        FG     = '#f0f0f0'
+        GREEN  = '#4ec94e'
+        RED    = '#f05050'
+        BLUE   = '#6ab0f5'
+
+        style.configure('.',                 background=BG,    foreground=FG)
+        style.configure('TFrame',            background=BG)
+        style.configure('TLabel',            background=BG,    foreground=FG)
+        style.configure('TLabelframe',       background=PANEL, foreground=FG)
+        style.configure('TLabelframe.Label', background=PANEL, foreground=BLUE)
+        style.configure('TButton',           background=ACCENT, foreground=FG, padding=4)
+        style.map('TButton',                 background=[('active', '#505050')])
+        style.configure('TCombobox',         fieldbackground=ACCENT, background=ACCENT,
+                        foreground=FG, selectbackground=ACCENT, selectforeground=FG)
+        style.configure('TSpinbox',          fieldbackground=ACCENT, background=ACCENT, foreground=FG)
+        style.configure('TEntry',            fieldbackground=ACCENT, foreground=FG, insertcolor=FG)
+        style.configure('TSeparator',        background=ACCENT)
+        style.configure('TScrollbar',        background=ACCENT, troughcolor=BG)
+
+        self._dark = dict(bg=BG, panel=PANEL, accent=ACCENT,
+                          fg=FG, green=GREEN, red=RED, blue=BLUE)
+        # ─────────────────────────────────────────────────────────────────────
+
+        self.create_widgets()
+        self.load_stock_statistics()
+
+    # ── Dark helpers ──────────────────────────────────────────────────────────
+
+    def _dark_fig(self, figsize=(10, 8)):
+        return Figure(figsize=figsize, dpi=100, facecolor=self._dark['panel'])
+
+    def _style_ax(self, ax):
+        d = self._dark
+        ax.set_facecolor(d['bg'])
+        ax.tick_params(colors=d['fg'])
+        ax.xaxis.label.set_color(d['fg'])
+        ax.yaxis.label.set_color(d['fg'])
+        ax.title.set_color(d['blue'])
+        for spine in ax.spines.values():
+            spine.set_edgecolor(d['accent'])
+        return ax
+
+    # ── Widgets ───────────────────────────────────────────────────────────────
+
+    def create_widgets(self):
+        control_frame = ttk.Frame(self.root)
+        control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+
+        ttk.Label(control_frame, text="Stock:").pack(side=tk.LEFT, padx=5)
+        self.stock_var = tk.StringVar(value="RELIANCE.NS")
+        stock_combo = ttk.Combobox(control_frame, textvariable=self.stock_var,
+                                   values=self.STOCKS, state="readonly", width=14)
+        stock_combo.pack(side=tk.LEFT, padx=5)
+        stock_combo.bind("<<ComboboxSelected>>", self.on_stock_changed)
+
+        ttk.Label(control_frame, text="Days:").pack(side=tk.LEFT, padx=5)
+        self.days_var = tk.StringVar(value="252")
+        ttk.Spinbox(control_frame, from_=1, to=1000, textvariable=self.days_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(control_frame, text="Simulations:").pack(side=tk.LEFT, padx=5)
+        self.sims_var = tk.StringVar(value="1000")
+        ttk.Spinbox(control_frame, from_=100, to=10000, textvariable=self.sims_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(control_frame, text="Annual Return (%):").pack(side=tk.LEFT, padx=5)
+        self.annual_return_var = tk.StringVar(value="")
+        ttk.Entry(control_frame, textvariable=self.annual_return_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(control_frame, text="Annual Vol (%):").pack(side=tk.LEFT, padx=5)
+        self.annual_vol_var = tk.StringVar(value="")
+        ttk.Entry(control_frame, textvariable=self.annual_vol_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(control_frame, text="Run Simulation",    command=self.run_simulation).pack(side=tk.LEFT, padx=10)
+        ttk.Button(control_frame, text="VaR Analysis",      command=self.open_var_window).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Efficient Frontier",command=self.open_frontier_window).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Technical Analysis", command=self.open_ta_window).pack(side=tk.LEFT, padx=5)
+
+        content_frame = ttk.Frame(self.root)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        left_panel = ttk.Frame(content_frame)
+        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=5)
+        ttk.Label(left_panel, text="Stock Statistics", font=("Arial", 12, "bold")).pack()
+        self.stats_frame = ttk.Frame(left_panel)
+        self.stats_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.chart_frame = ttk.Frame(content_frame)
+        self.chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        right_panel = ttk.Frame(content_frame)
+        right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=5)
+        ttk.Label(right_panel, text="Simulation Results", font=("Arial", 12, "bold")).pack()
+        self.results_frame = ttk.Frame(right_panel)
+        self.results_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    # ── Stock stats ───────────────────────────────────────────────────────────
+
+    def load_stock_statistics(self):
+        for stock in self.STOCKS:
+            stats = self.data_fetcher.get_statistics(stock)
+            if stats:
+                self.stock_stats[stock] = stats
+        self.display_stock_stats()
+
+    def display_stock_stats(self):
+        for widget in self.stats_frame.winfo_children():
+            widget.destroy()
+        stock = self.stock_var.get()
+        if stock not in self.stock_stats:
+            ttk.Label(self.stats_frame, text="Loading...").pack()
+            return
+        stats = self.stock_stats[stock]
+        info_text = f"""
+Stock: {stats['ticker']}
+Current Price: \u20b9{stats['current_price']:.2f}
+
+Annual Metrics:
+Return: {stats['annual_return']*100:.2f}%
+Volatility: {stats['annual_volatility']*100:.2f}%
+
+Historical Range:
+Min: \u20b9{stats['min_price']:.2f}
+Max: \u20b9{stats['max_price']:.2f}
+        """
+        ttk.Label(self.stats_frame, text=info_text, justify=tk.LEFT).pack(anchor=tk.W, padx=5, pady=5)
+
+    def on_stock_changed(self, event):
+        self.display_stock_stats()
+        self.clear_charts()
+        self.clear_results()
+
+    def clear_charts(self):
+        for widget in self.chart_frame.winfo_children():
+            widget.destroy()
+
+    def clear_results(self):
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
+
+    # ── Main simulation ───────────────────────────────────────────────────────
+
+    def run_simulation(self):
+        try:
+            stock    = self.stock_var.get()
+            days     = int(self.days_var.get())
+            num_sims = int(self.sims_var.get())
+
+            if stock not in self.stock_stats:
+                messagebox.showerror("Error", f"Statistics not loaded for {stock}")
+                return
+
+            stats = self.stock_stats[stock]
+
+            mean_return = (float(self.annual_return_var.get()) / 100 / 252
+                           if self.annual_return_var.get().strip() else stats['mean_return'])
+            std_return  = (float(self.annual_vol_var.get()) / 100 / np.sqrt(252)
+                           if self.annual_vol_var.get().strip() else stats['std_return'])
+
+            simulator = MonteCarloSimulator(
+                current_price=stats['current_price'],
+                mean_return=mean_return,
+                std_return=std_return
+            )
+
+            price_paths    = simulator.run_simulation(days=days, num_simulations=num_sims)
+            sim_stats      = simulator.get_statistics(price_paths)
+            ci_lower, ci_upper = simulator.get_confidence_interval(price_paths)
+
+            self.current_simulation = {
+                'price_paths': price_paths,
+                'stats':       sim_stats,
+                'simulator':   simulator,
+                'ci_lower':    ci_lower,
+                'ci_upper':    ci_upper
+            }
+
+            self.display_charts(price_paths, sim_stats)
+            self.display_results(sim_stats, ci_lower, ci_upper)
+
+        except ValueError as e:
+            messagebox.showerror("Error", f"Invalid input: {e}")
+
+    def display_charts(self, price_paths, stats):
+        self.clear_charts()
+        d   = self._dark
+        fig = self._dark_fig(figsize=(10, 8))
+
+        ax1 = fig.add_subplot(2, 2, 1)
+        self._style_ax(ax1)
+        for i in range(min(100, len(price_paths))):
+            ax1.plot(price_paths[i], alpha=0.1, color=d['blue'])
+        ax1.axhline(y=stats['mean_final_price'], color=d['red'], linestyle='--', label='Mean')
+        ax1.set_title('Simulated Price Paths (Sample of 100)')
+        ax1.set_xlabel('Days')
+        ax1.set_ylabel('Price (\u20b9)')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        ax2 = fig.add_subplot(2, 2, 2)
+        self._style_ax(ax2)
+        ax2.hist(stats['all_final_prices'], bins=50, color=d['green'], alpha=0.7, edgecolor='black')
+        ax2.axvline(x=stats['mean_final_price'],           color=d['red'],  linestyle='--', label='Mean')
+        ax2.axvline(x=self.current_simulation['ci_lower'], color='orange',  linestyle='--', label='95% CI')
+        ax2.axvline(x=self.current_simulation['ci_upper'], color='orange',  linestyle='--')
+        ax2.set_title('Distribution of Final Prices')
+        ax2.set_xlabel('Price (\u20b9)')
+        ax2.set_ylabel('Frequency')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        ax3 = fig.add_subplot(2, 2, 3)
+        self._style_ax(ax3)
+        percentiles = ['5%', '25%', '50%', '75%', '95%']
+        values = [stats['percentile_5'], stats['percentile_25'],
+                  stats['median_final_price'],
+                  stats['percentile_75'], stats['percentile_95']]
+        bar_colors = [d['red'] if v < self.current_simulation['simulator'].current_price
+                      else d['green'] for v in values]
+        ax3.bar(percentiles, values, color=bar_colors, alpha=0.7, edgecolor='black')
+        ax3.axhline(y=self.current_simulation['simulator'].current_price,
+                    color=d['blue'], linestyle='--', label='Current Price')
+        ax3.set_title('Price Percentiles')
+        ax3.set_ylabel('Price (\u20b9)')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3, axis='y')
+
+        ax4 = fig.add_subplot(2, 2, 4)
+        self._style_ax(ax4)
+        mean_path = np.mean(price_paths, axis=0)
+        std_path  = np.std(price_paths,  axis=0)
+        x = np.arange(len(mean_path))
+        ax4.plot(x, mean_path, color=d['blue'], label='Mean Path', linewidth=2)
+        ax4.fill_between(x, mean_path - std_path, mean_path + std_path,
+                         alpha=0.3, color=d['blue'], label='\u00b11 Std Dev')
+        ax4.set_title('Mean Price Path with Confidence Band')
+        ax4.set_xlabel('Days')
+        ax4.set_ylabel('Price (\u20b9)')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def display_results(self, stats, ci_lower, ci_upper):
+        self.clear_results()
+        d = self._dark
+        results_text = f"""
+SIMULATION RESULTS
+
+Final Price Statistics:
+  Mean:    \u20b9{stats['mean_final_price']:.2f}
+  Median:  \u20b9{stats['median_final_price']:.2f}
+  Std Dev: \u20b9{stats['std_final_price']:.2f}
+  Min:     \u20b9{stats['min_final_price']:.2f}
+  Max:     \u20b9{stats['max_final_price']:.2f}
+
+Confidence Interval (95%):
+  Lower: \u20b9{ci_lower:.2f}
+  Upper: \u20b9{ci_upper:.2f}
+
+Risk Metrics:
+  Prob. of Profit:     {stats['prob_profit']*100:.2f}%
+  Expected Return:     {stats['expected_return']*100:.2f}%
+  Value at Risk (95%): \u20b9{stats['value_at_risk_95']:.2f}
+
+Percentiles:
+  5th:  \u20b9{stats['percentile_5']:.2f}
+  25th: \u20b9{stats['percentile_25']:.2f}
+  75th: \u20b9{stats['percentile_75']:.2f}
+  95th: \u20b9{stats['percentile_95']:.2f}
+        """
+        text_widget = tk.Text(self.results_frame, width=35, height=30, font=("Courier", 9),
+                              bg=d['panel'], fg=d['fg'], insertbackground=d['fg'],
+                              selectbackground=d['accent'])
+        text_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        text_widget.insert(tk.END, results_text)
+        text_widget.config(state=tk.DISABLED)
+        scrollbar = ttk.Scrollbar(self.results_frame, orient=tk.VERTICAL, command=text_widget.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text_widget.config(yscrollcommand=scrollbar.set)
+
+    # ── VaR Window ────────────────────────────────────────────────────────────
+
+    def open_var_window(self):
+        if self.current_simulation is None:
+            messagebox.showwarning("No Simulation", "Run a simulation first.")
+            return
+
+        d             = self._dark
+        price_paths   = self.current_simulation['price_paths']
+        current_price = self.current_simulation['simulator'].current_price
+        final_prices  = price_paths[:, -1]
+        returns       = (final_prices - current_price) / current_price
+
+        var_window = tk.Toplevel(self.root)
+        var_window.title("VaR \u2014 Monte Carlo Analysis")
+        var_window.geometry("900x650")
+        var_window.configure(bg=d['bg'])
+
+        stats_frame = ttk.Frame(var_window)
+        stats_frame.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=15)
+
+        ttk.Label(stats_frame, text="VaR Summary", font=("Arial", 12, "bold")).pack(anchor=tk.W, pady=5)
+
+        for cl in [0.90, 0.95, 0.99]:
+            var_pct    = np.percentile(returns, (1 - cl) * 100)
+            var_price  = current_price * (1 + var_pct)
+            cvar       = returns[returns <= var_pct].mean()
+            cvar_price = current_price * (1 + cvar)
+            ttk.Label(stats_frame, text=f"\n{int(cl*100)}% Confidence Level",
+                      font=("Arial", 10, "bold")).pack(anchor=tk.W)
+            ttk.Label(stats_frame, text=f"  VaR  (loss):   {var_pct*100:.2f}%").pack(anchor=tk.W)
+            ttk.Label(stats_frame, text=f"  VaR  (price):  \u20b9{var_price:.2f}").pack(anchor=tk.W)
+            ttk.Label(stats_frame, text=f"  CVaR (loss):   {cvar*100:.2f}%").pack(anchor=tk.W)
+            ttk.Label(stats_frame, text=f"  CVaR (price):  \u20b9{cvar_price:.2f}").pack(anchor=tk.W)
+
+        ttk.Separator(stats_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+        ttk.Label(stats_frame, text="Return Distribution", font=("Arial", 10, "bold")).pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"  Mean Return:  {returns.mean()*100:.2f}%").pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"  Std Dev:      {returns.std()*100:.2f}%").pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"  Best Case:    {returns.max()*100:.2f}%").pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"  Worst Case:   {returns.min()*100:.2f}%").pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"  Prob. Profit: {(returns>0).mean()*100:.2f}%").pack(anchor=tk.W)
+
+        chart_frame = ttk.Frame(var_window)
+        chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=15)
+
+        fig = self._dark_fig(figsize=(7, 6))
+        ax  = fig.add_subplot(1, 1, 1)
+        self._style_ax(ax)
+
+        ax.hist(returns * 100, bins=60, color='steelblue', alpha=0.7,
+                edgecolor='black', label='Return Distribution')
+        for cl, color in zip([0.90, 0.95, 0.99], ['gold', 'orange', 'red']):
+            vp = np.percentile(returns, (1 - cl) * 100)
+            ax.axvline(x=vp * 100, color=color, linestyle='--',
+                       linewidth=1.5, label=f'VaR {int(cl*100)}%')
+        ax.axvline(x=0, color=d['green'], linestyle='-', linewidth=1.5, label='Break Even')
+        ax.set_title('Monte Carlo Return Distribution with VaR Levels')
+        ax.set_xlabel('Return (%)')
+        ax.set_ylabel('Frequency')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+
+        canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    # ── Efficient Frontier Window ─────────────────────────────────────────────
+
+    def open_frontier_window(self):
+        d = self._dark
+
+        frontier_window = tk.Toplevel(self.root)
+        frontier_window.title("Efficient Frontier \u2014 Nifty 50")
+        frontier_window.geometry("1100x750")
+        frontier_window.configure(bg=d['bg'])
+
+        left = ttk.Frame(frontier_window)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=15)
+
+        ttk.Label(left, text="Select Stocks (min 2)", font=("Arial", 11, "bold")).pack(anchor=tk.W, pady=5)
+        ttk.Label(left, text="Hold Ctrl to multi-select", font=("Arial", 8)).pack(anchor=tk.W)
+
+        listbox = tk.Listbox(left, selectmode=tk.MULTIPLE, height=30, width=22,
+                             exportselection=False,
+                             bg=d['panel'], fg=d['fg'], selectbackground=d['accent'])
+        listbox.pack(pady=5)
+
+        nifty_stocks = [
+            'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
+            'HINDUNILVR.NS', 'ITC.NS', 'SBIN.NS', 'BHARTIARTL.NS', 'KOTAKBANK.NS',
+            'LT.NS', 'AXISBANK.NS', 'BAJFINANCE.NS', 'MARUTI.NS', 'TITAN.NS',
+            'ASIANPAINT.NS', 'SUNPHARMA.NS', 'HCLTECH.NS', 'WIPRO.NS', 'NTPC.NS',
+            'TATAMOTORS.NS', 'TATASTEEL.NS', 'ADANIPORTS.NS', 'JSWSTEEL.NS',
+            'HINDALCO.NS', 'COALINDIA.NS', 'ONGC.NS', 'DRREDDY.NS', 'CIPLA.NS',
+            'EICHERMOT.NS', 'BAJAJ-AUTO.NS', 'M&M.NS', 'TECHM.NS', 'NESTLEIND.NS',
+        ]
+        for s in nifty_stocks:
+            listbox.insert(tk.END, s)
+        for i in range(5):
+            listbox.selection_set(i)
+
+        ttk.Label(left, text="Portfolios to simulate:").pack(anchor=tk.W, pady=(10, 0))
+        sims_var = tk.StringVar(value="3000")
+        ttk.Spinbox(left, from_=500, to=10000, textvariable=sims_var, width=10).pack(anchor=tk.W)
+
+        status_label = ttk.Label(left, text="", foreground=d['blue'], wraplength=160)
+        status_label.pack(anchor=tk.W, pady=5)
+
+        chart_frame = ttk.Frame(frontier_window)
+        chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=15)
+
+        fig = self._dark_fig(figsize=(8, 6))
+        ax  = fig.add_subplot(1, 1, 1)
+        self._style_ax(ax)
+        ax.set_title("Run simulation to see frontier")
+        ax.set_xlabel("Annual Volatility (%)")
+        ax.set_ylabel("Annual Return (%)")
+        fig.tight_layout()
+
+        canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        results_text = tk.Text(chart_frame, height=7, font=("Courier", 9),
+                               bg=d['panel'], fg=d['fg'])
+        results_text.pack(fill=tk.X, pady=5)
+        results_text.config(state=tk.DISABLED)
+
+        def run_frontier():
+            selected = listbox.curselection()
+            if len(selected) < 2:
+                messagebox.showwarning("Select Stocks", "Please select at least 2 stocks.")
+                return
+
+            selected_stocks = [nifty_stocks[i] for i in selected]
+            num_portfolios  = int(sims_var.get())
+
+            status_label.config(text=f"Fetching data for {len(selected_stocks)} stocks...")
+            frontier_window.update()
+
+            all_returns = {}
+            for stock in selected_stocks:
+                data = self.data_fetcher.get_stock_data(stock, period="2y")
+                if data is not None and len(data) > 10:
+                    prices = data['Adj Close'] if 'Adj Close' in data.columns else data['Close']
+                    all_returns[stock] = prices.pct_change().dropna()
+
+            if len(all_returns) < 2:
+                messagebox.showerror("Error", "Could not fetch data for enough stocks.")
+                status_label.config(text="Failed.")
+                return
+
+            status_label.config(text=f"Running {num_portfolios} portfolios...")
+            frontier_window.update()
+
+            returns_df   = pd.DataFrame(all_returns).dropna()
+            mean_returns = returns_df.mean() * 252
+            cov_matrix   = returns_df.cov()  * 252
+            n            = len(mean_returns)
+
+            port_returns, port_vols, port_sharpes, port_weights = [], [], [], []
+            risk_free = 0.065
+
+            for _ in range(num_portfolios):
+                w      = np.random.random(n)
+                w      = w / w.sum()
+                ret    = np.dot(w, mean_returns)
+                vol    = np.sqrt(w @ cov_matrix.values @ w)
+                sharpe = (ret - risk_free) / vol
+                port_returns.append(ret)
+                port_vols.append(vol)
+                port_sharpes.append(sharpe)
+                port_weights.append(w)
+
+            port_returns  = np.array(port_returns)
+            port_vols     = np.array(port_vols)
+            port_sharpes  = np.array(port_sharpes)
+
+            max_s = np.argmax(port_sharpes)
+            min_v = np.argmin(port_vols)
+
+            ax.clear()
+            self._style_ax(ax)
+            sc = ax.scatter(port_vols * 100, port_returns * 100,
+                            c=port_sharpes, cmap='viridis', alpha=0.5, s=8)
+            fig.colorbar(sc, ax=ax, label='Sharpe Ratio')
+            ax.scatter(port_vols[max_s] * 100, port_returns[max_s] * 100,
+                       color='red',  marker='*', s=300, zorder=5, label='Max Sharpe')
+            ax.scatter(port_vols[min_v] * 100, port_returns[min_v] * 100,
+                       color='lime', marker='D', s=100, zorder=5, label='Min Volatility')
+            ax.set_title("Efficient Frontier \u2014 Nifty 50")
+            ax.set_xlabel("Annual Volatility (%)")
+            ax.set_ylabel("Annual Return (%)")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            canvas.draw()
+
+            ms_lines = "\n".join(
+                f"  {s:<20} {w*100:.1f}%"
+                for s, w in sorted(zip(returns_df.columns, port_weights[max_s]), key=lambda x: -x[1])
+                if w > 0.01)
+            mv_lines = "\n".join(
+                f"  {s:<20} {w*100:.1f}%"
+                for s, w in sorted(zip(returns_df.columns, port_weights[min_v]), key=lambda x: -x[1])
+                if w > 0.01)
+
+            summary = (
+                f"MAX SHARPE  \u2192  Return: {port_returns[max_s]*100:.2f}%  |  "
+                f"Vol: {port_vols[max_s]*100:.2f}%  |  Sharpe: {port_sharpes[max_s]:.2f}\n{ms_lines}\n\n"
+                f"MIN VOL     \u2192  Return: {port_returns[min_v]*100:.2f}%  |  "
+                f"Vol: {port_vols[min_v]*100:.2f}%  |  Sharpe: {port_sharpes[min_v]:.2f}\n{mv_lines}"
+            )
+            results_text.config(state=tk.NORMAL)
+            results_text.delete(1.0, tk.END)
+            results_text.insert(tk.END, summary)
+            results_text.config(state=tk.DISABLED)
+            status_label.config(text=f"Done. {len(returns_df.columns)} stocks used.")
+
+        ttk.Button(left, text="Run Frontier", command=run_frontier).pack(pady=10)
+
+    # ── Technical Analysis Window ─────────────────────────────────────────────
+
+    def open_ta_window(self):
+        d     = self._dark
+        stock = self.stock_var.get()
+
+        ta_window = tk.Toplevel(self.root)
+        ta_window.title(f"Technical Analysis \u2014 {stock}")
+        ta_window.geometry("1200x800")
+        ta_window.configure(bg=d['bg'])
+
+        left = ttk.Frame(ta_window, width=260)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=15)
+        left.pack_propagate(False)
+
+        ttk.Label(left, text="Stock:").pack(anchor=tk.W)
+        stock_var = tk.StringVar(value=stock)
+        ttk.Combobox(left, textvariable=stock_var, values=self.STOCKS,
+                     state="readonly", width=20).pack(anchor=tk.W, pady=3)
+
+        ttk.Label(left, text="Period:").pack(anchor=tk.W, pady=(8, 0))
+        period_var = tk.StringVar(value="1y")
+        ttk.Combobox(left, textvariable=period_var, values=["3mo", "6mo", "1y", "2y"],
+                     state="readonly", width=10).pack(anchor=tk.W)
+
+        rating_frame = ttk.LabelFrame(left, text="Overall Rating")
+        rating_frame.pack(fill=tk.X, pady=15)
+        rating_label = tk.Label(rating_frame, text="\u2014", font=("Arial", 28, "bold"),
+                                fg="gray", bg=d['panel'])
+        rating_label.pack(pady=8)
+        rating_detail = tk.Text(rating_frame, height=4, width=28, font=("Courier", 8),
+                                state=tk.DISABLED, bg=d['panel'], fg=d['fg'],
+                                insertbackground=d['fg'])
+        rating_detail.pack(padx=5, pady=5)
+
+        signals_frame = ttk.LabelFrame(left, text="Indicator Signals")
+        signals_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        signals_text = tk.Text(signals_frame, font=("Courier", 8), state=tk.DISABLED,
+                               wrap=tk.WORD, bg=d['panel'], fg=d['fg'],
+                               insertbackground=d['fg'])
+        signals_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        chart_frame = ttk.Frame(ta_window)
+        chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=15)
+
+        fig    = self._dark_fig(figsize=(9, 8))
+        canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        def compute_rsi(prices, period=14):
+            delta    = np.diff(prices)
+            gain     = np.where(delta > 0, delta, 0)
+            loss     = np.where(delta < 0, -delta, 0)
+            avg_gain = np.convolve(gain, np.ones(period) / period, mode='valid')
+            avg_loss = np.convolve(loss, np.ones(period) / period, mode='valid')
+            avg_loss = np.where(avg_loss == 0, 1e-10, avg_loss)
+            rsi = 100 - (100 / (1 + avg_gain / avg_loss))
+            return np.concatenate([np.full(len(prices) - len(rsi), np.nan), rsi])
+
+        def compute_macd(prices, fast=12, slow=26, signal=9):
+            def ema(arr, span):
+                result = np.full(len(arr), np.nan)
+                k = 2 / (span + 1)
+                result[span - 1] = np.mean(arr[:span])
+                for i in range(span, len(arr)):
+                    result[i] = arr[i] * k + result[i - 1] * (1 - k)
+                return result
+
+            ml  = ema(prices, fast) - ema(prices, slow)
+            valid = ~np.isnan(ml)
+            sl  = np.full(len(ml), np.nan)
+            sl[valid] = ema(ml[valid], signal)
+            return ml, sl, ml - sl
+
+        def run_analysis():
+            s    = stock_var.get()
+            p    = period_var.get()
+            data = self.data_fetcher.get_stock_data(s, period=p)
+            if data is None or len(data) < 50:
+                messagebox.showerror("Error", "Not enough data. Try a longer period.")
+                return
+
+            prices = data['Adj Close'].values if 'Adj Close' in data.columns else data['Close'].values
+            dates  = np.arange(len(prices))
+
+            def ma_full(w):
+                m = np.convolve(prices, np.ones(w) / w, mode='valid')
+                return np.concatenate([np.full(len(prices) - len(m), np.nan), m])
+
+            ma20  = ma_full(20)
+            ma50  = ma_full(50)
+            ma200 = ma_full(200) if len(prices) >= 200 else np.full(len(prices), np.nan)
+
+            bb_std   = np.array([np.std(prices[max(0, i-20):i]) for i in range(1, len(prices)+1)])
+            bb_upper = ma20 + 2 * bb_std
+            bb_lower = ma20 - 2 * bb_std
+
+            rsi                 = compute_rsi(prices)
+            macd_l, sig_l, hist = compute_macd(prices)
+
+            cp      = prices[-1]
+            signals = []
+            score   = 0
+
+            for label, arr, w in [("MA20", ma20, 1), ("MA50", ma50, 1), ("MA200", ma200, 2)]:
+                if not np.isnan(arr[-1]):
+                    if cp > arr[-1]:
+                        signals.append((label, "ABOVE \u2014 Bullish", "+"))
+                        score += w
+                    else:
+                        signals.append((label, "BELOW \u2014 Bearish", "-"))
+                        score -= w
+
+            if not np.isnan(ma50[-1]) and not np.isnan(ma200[-1]):
+                if ma50[-1] > ma200[-1]:
+                    signals.append(("Cross", "GOLDEN CROSS \u2014 Bullish", "+"))
+                    score += 2
+                else:
+                    signals.append(("Cross", "DEATH CROSS  \u2014 Bearish", "-"))
+                    score -= 2
+
+            rv = rsi[-1]
+            if not np.isnan(rv):
+                if rv < 30:
+                    signals.append(("RSI", f"{rv:.1f} \u2014 Oversold (Buy)", "+"))
+                    score += 2
+                elif rv > 70:
+                    signals.append(("RSI", f"{rv:.1f} \u2014 Overbought (Sell)", "-"))
+                    score -= 2
+                elif rv > 50:
+                    signals.append(("RSI", f"{rv:.1f} \u2014 Mild Bullish", "+"))
+                    score += 1
+                else:
+                    signals.append(("RSI", f"{rv:.1f} \u2014 Mild Bearish", "-"))
+                    score -= 1
+
+            if not np.isnan(macd_l[-1]) and not np.isnan(sig_l[-1]):
+                if macd_l[-1] > sig_l[-1]:
+                    signals.append(("MACD", "Above Signal \u2014 Bullish", "+"))
+                    score += 1
+                else:
+                    signals.append(("MACD", "Below Signal \u2014 Bearish", "-"))
+                    score -= 1
+
+            if not np.isnan(bb_upper[-1]):
+                if cp > bb_upper[-1]:
+                    signals.append(("BBands", "Above Upper \u2014 Overbought", "-"))
+                    score -= 1
+                elif cp < bb_lower[-1]:
+                    signals.append(("BBands", "Below Lower \u2014 Oversold", "+"))
+                    score += 1
+                else:
+                    signals.append(("BBands", "Within Bands \u2014 Neutral", "="))
+
+            if score >= 4:
+                rating, color = "BUY",  d['green']
+            elif score <= -4:
+                rating, color = "SELL", d['red']
+            else:
+                rating, color = "HOLD", "orange"
+
+            rating_label.config(text=rating, fg=color)
+            detail = (f"Score: {score:+d} / 11\n"
+                      f"Bullish: {sum(1 for x in signals if x[2]=='+')}   "
+                      f"Bearish: {sum(1 for x in signals if x[2]=='-')}")
+            rating_detail.config(state=tk.NORMAL)
+            rating_detail.delete(1.0, tk.END)
+            rating_detail.insert(tk.END, detail)
+            rating_detail.config(state=tk.DISABLED)
+
+            sig_text = ""
+            for name, desc, direction in signals:
+                arrow = "\u25b2" if direction == "+" else ("\u25bc" if direction == "-" else "\u25ba")
+                sig_text += f"{arrow} {name:<8} {desc}\n"
+            signals_text.config(state=tk.NORMAL)
+            signals_text.delete(1.0, tk.END)
+            signals_text.insert(tk.END, sig_text)
+            signals_text.config(state=tk.DISABLED)
+
+            fig.clear()
+
+            ax1 = fig.add_subplot(3, 1, 1)
+            self._style_ax(ax1)
+            ax1.plot(dates, prices, color=d['fg'],   linewidth=1, label='Price')
+            ax1.plot(dates, ma20,   color=d['blue'], linewidth=1, label='MA20',  linestyle='--')
+            ax1.plot(dates, ma50,   color='orange',  linewidth=1, label='MA50',  linestyle='--')
+            if not np.all(np.isnan(ma200)):
+                ax1.plot(dates, ma200, color='violet', linewidth=1, label='MA200', linestyle='--')
+            ax1.fill_between(dates, bb_upper, bb_lower, alpha=0.1, color='gray', label='Bollinger')
+            ax1.plot(dates, bb_upper, color='gray', linewidth=0.5, linestyle=':')
+            ax1.plot(dates, bb_lower, color='gray', linewidth=0.5, linestyle=':')
+            ax1.set_title(f"{s} \u2014 Price & Moving Averages")
+            ax1.set_ylabel("Price (\u20b9)")
+            ax1.legend(fontsize=7)
+            ax1.grid(True, alpha=0.3)
+
+            ax2 = fig.add_subplot(3, 1, 2)
+            self._style_ax(ax2)
+            ax2.plot(dates, rsi, color='violet', linewidth=1)
+            ax2.axhline(70, color=d['red'],   linestyle='--', linewidth=0.8, label='Overbought (70)')
+            ax2.axhline(30, color=d['green'], linestyle='--', linewidth=0.8, label='Oversold (30)')
+            ax2.axhline(50, color='gray',     linestyle=':',  linewidth=0.5)
+            ax2.fill_between(dates, rsi, 70, where=(rsi >= 70), alpha=0.3, color=d['red'])
+            ax2.fill_between(dates, rsi, 30, where=(rsi <= 30), alpha=0.3, color=d['green'])
+            ax2.set_ylim(0, 100)
+            ax2.set_title("RSI (14)")
+            ax2.set_ylabel("RSI")
+            ax2.legend(fontsize=7)
+            ax2.grid(True, alpha=0.3)
+
+            ax3 = fig.add_subplot(3, 1, 3)
+            self._style_ax(ax3)
+            ax3.plot(dates, macd_l, color=d['blue'], linewidth=1, label='MACD')
+            ax3.plot(dates, sig_l,  color='orange',  linewidth=1, label='Signal')
+            hv = np.where(np.isnan(hist), 0, hist)
+            ax3.bar(dates, hv, color=[d['green'] if h >= 0 else d['red'] for h in hv],
+                    alpha=0.5, label='Histogram')
+            ax3.axhline(0, color=d['fg'], linewidth=0.5)
+            ax3.set_title("MACD (12, 26, 9)")
+            ax3.set_ylabel("MACD")
+            ax3.set_xlabel("Days")
+            ax3.legend(fontsize=7)
+            ax3.grid(True, alpha=0.3)
+
+            fig.tight_layout()
+            canvas.draw()
+
+        ttk.Button(left, text="Analyse", command=run_analysis).pack(pady=10)
+        run_analysis()
+
+
+def main():
+    root = tk.Tk()
+    MonteCarloGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
